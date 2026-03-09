@@ -1,7 +1,18 @@
 import { useState, useEffect } from 'react';
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, orderBy, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from './firebase';
 import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  Check, 
+  Plus, 
+  Trash2, 
+  Info, 
+  X,
+  Cloud,
+  CloudOff,
+  AlertCircle
+} from 'lucide-react';
+import confetti from 'canvas-confetti';
 import theme from './theme';
 import './index.css';
 
@@ -9,358 +20,418 @@ interface Task {
   id: string;
   text: string;
   completed: boolean;
-  category: 'Focus' | 'Life' | 'Errands';
-  createdAt: any;
+  category: 'Personal' | 'Work' | 'Shopping' | 'Health';
+  createdAt: number; // using timestamp integer for consistent sorting across devices
 }
 
-type FilterType = 'all' | 'active' | 'done';
+type FilterType = 'All' | 'Active' | 'Completed';
+type CategoryType = Task['category'];
+
+const CATEGORIES: CategoryType[] = ['Personal', 'Work', 'Shopping', 'Health'];
+
+const CATEGORY_COLORS = theme.categories;
+const CATEGORY_DOTS = theme.dots;
 
 function App() {
-  const [tasks, setTasks] = useState<Task[]>([]);
+  // Load initial from local storage so it NEVER looks empty while loading
+  const [tasks, setTasks] = useState<Task[]>(() => {
+    const saved = localStorage.getItem('taskflow-tasks');
+    return saved ? JSON.parse(saved) : [];
+  });
+  
   const [newTask, setNewTask] = useState('');
-  const [category, setCategory] = useState<'Focus' | 'Life' | 'Errands'>('Focus');
-  const [filter, setFilter] = useState<FilterType>('all');
-  const [loading, setLoading] = useState(true);
+  const [category, setCategory] = useState<CategoryType>('Personal');
+  const [filter, setFilter] = useState<FilterType>('All');
+  const [showInfo, setShowInfo] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'syncing' | 'synced' | 'error'>('syncing');
+  const [errorMessage, setErrorMessage] = useState('');
 
-  // Real-time sync with Firebase
+  // Save to local storage whenever tasks change (fallback)
   useEffect(() => {
-    const q = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const tasksData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Task[];
-      setTasks(tasksData);
-      setLoading(false);
-    }, (error) => {
-      console.error('Error fetching tasks:', error);
-      setLoading(false);
-    });
+    localStorage.setItem('taskflow-tasks', JSON.stringify(tasks));
+  }, [tasks]);
 
-    return () => unsubscribe();
+  // Firebase Real-time Sync
+  useEffect(() => {
+    try {
+      const q = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'));
+      
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const tasksData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as Task[];
+        
+        setTasks(tasksData);
+        setSyncStatus('synced');
+        setErrorMessage('');
+      }, (error) => {
+        console.error('Firebase sync error:', error);
+        setSyncStatus('error');
+        if (error.code === 'permission-denied') {
+          setErrorMessage('Database permissions denied. Please enable Test Mode in Firebase Console.');
+        } else {
+          setErrorMessage('Could not connect to database. Using offline mode.');
+        }
+      });
+
+      return () => unsubscribe();
+    } catch (err) {
+      console.error('Firebase init error:', err);
+      setSyncStatus('error');
+      setErrorMessage('Invalid Firebase config. Check your API keys.');
+    }
   }, []);
+
+  const triggerConfetti = () => {
+    confetti({
+      particleCount: 100,
+      spread: 70,
+      origin: { y: 0.6 },
+      colors: ['#3b82f6', '#8b5cf6', '#ec4899', '#10b981']
+    });
+  };
 
   const addTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTask.trim()) return;
 
+    const newTaskData: Task = {
+      id: crypto.randomUUID(),
+      text: newTask.trim(),
+      completed: false,
+      category,
+      createdAt: Date.now()
+    };
+
+    // Optimistic UI update
+    setTasks(prev => [newTaskData, ...prev]);
+    setNewTask('');
+
+    // Sync to Firebase
     try {
-      await addDoc(collection(db, 'tasks'), {
-        text: newTask.trim(),
-        completed: false,
-        category,
-        createdAt: serverTimestamp()
-      });
-      setNewTask('');
-    } catch (error) {
-      console.error('Error adding task:', error);
+      await setDoc(doc(db, 'tasks', newTaskData.id), newTaskData);
+    } catch (error: any) {
+      console.error('Error adding to Firebase:', error);
+      if (syncStatus !== 'error') setSyncStatus('error');
+      // Already saved to localStorage, so data isn't lost
     }
   };
 
   const toggleTask = async (task: Task) => {
+    if (!task.completed) {
+      triggerConfetti();
+    }
+
+    const newCompletedState = !task.completed;
+
+    // Optimistic UI update
+    setTasks(prev => prev.map(t => 
+      t.id === task.id ? { ...t, completed: newCompletedState } : t
+    ));
+
+    // Sync to Firebase
     try {
-      const taskRef = doc(db, 'tasks', task.id);
-      await updateDoc(taskRef, { completed: !task.completed });
-    } catch (error) {
-      console.error('Error updating task:', error);
+      await setDoc(doc(db, 'tasks', task.id), { ...task, completed: newCompletedState }, { merge: true });
+    } catch (error: any) {
+      console.error('Error updating Firebase:', error);
     }
   };
 
   const deleteTask = async (taskId: string) => {
+    // Optimistic UI update
+    setTasks(prev => prev.filter(t => t.id !== taskId));
+
+    // Sync to Firebase
     try {
       await deleteDoc(doc(db, 'tasks', taskId));
-    } catch (error) {
-      console.error('Error deleting task:', error);
-    }
-  };
-
-  const clearCompleted = async () => {
-    try {
-      const completedTasks = tasks.filter(task => task.completed);
-      await Promise.all(
-        completedTasks.map(task => deleteDoc(doc(db, 'tasks', task.id)))
-      );
-    } catch (error) {
-      console.error('Error clearing completed:', error);
+    } catch (error: any) {
+      console.error('Error deleting from Firebase:', error);
     }
   };
 
   const filteredTasks = tasks.filter(task => {
-    if (filter === 'active') return !task.completed;
-    if (filter === 'done') return task.completed;
+    if (filter === 'Active') return !task.completed;
+    if (filter === 'Completed') return task.completed;
     return true;
   });
 
   const completedCount = tasks.filter(t => t.completed).length;
   const totalCount = tasks.length;
-  const progress = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
-  
-  // Date formatting for the header
-  const today = new Date();
-  const dateStr = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-  const hour = today.getHours();
-  const greeting = hour < 12 ? 'Good Morning,' : hour < 18 ? 'Good Afternoon,' : 'Good Evening,';
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-white" style={{ backgroundColor: theme.pageBg }}>
-        <div className="animate-pulse flex flex-col items-center">
-          <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin mb-4"></div>
-          <p>Loading tasks...</p>
-        </div>
-      </div>
-    );
-  }
+  const progress = totalCount === 0 ? 0 : Math.round((completedCount / totalCount) * 100);
 
   return (
-    <motion.div 
-      className="min-h-screen text-white selection:bg-cyan-500/30 overflow-hidden"
-      style={{ backgroundColor: theme.pageBg }}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-    >
-      <div className="max-w-md mx-auto h-screen flex flex-col relative">
+    <div className={`min-h-screen ${theme.pageBg} text-white font-sans selection:bg-indigo-500/30`}>
+      
+      {/* Background ambient light */}
+      <div className="fixed top-0 left-0 right-0 h-96 bg-gradient-to-b from-indigo-900/20 via-purple-900/10 to-transparent pointer-events-none" />
+
+      <div className="max-w-md mx-auto min-h-screen flex flex-col relative z-10 pb-40">
         
-        {/* HEADER SECTION */}
-        <header className="px-6 pt-12 pb-6 flex-shrink-0">
-          <motion.div
-            initial={{ y: -20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            transition={{ delay: 0.1 }}
-          >
-            <p className="text-white/50 text-xs font-medium mb-1 uppercase tracking-wider">{dateStr}</p>
-            <h1 className={`${theme.titleSize} font-bold tracking-tight leading-none mb-1`}>
-              {greeting}
-            </h1>
-            <h2 className="text-2xl font-bold text-transparent bg-clip-text" style={{ backgroundImage: `linear-gradient(to right, ${theme.accentStart}, ${theme.accentEnd})` }}>
-              {theme.appName}
-            </h2>
-          </motion.div>
-
-          {/* Progress Ring & Stats */}
-          <motion.div 
-            className="mt-6 flex items-center justify-between bg-white/5 p-4 rounded-2xl border border-white/5"
-            initial={{ scale: 0.95, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ delay: 0.2 }}
-          >
+        {/* Header Section */}
+        <header className={`pt-12 pb-6 px-6 sticky top-0 ${theme.headerBg} backdrop-blur-xl z-20 border-b border-white/5`}>
+          <div className="flex justify-between items-center mb-6">
             <div>
-              <p className="text-3xl font-bold">{totalCount - completedCount}</p>
-              <p className="text-white/40 text-xs uppercase tracking-wide">Tasks Remaining</p>
+              <h1 className={`text-3xl font-bold bg-gradient-to-r ${theme.gradientTextStart} ${theme.gradientTextEnd} bg-clip-text text-transparent`}>
+                {theme.appName}
+              </h1>
+              <p className="text-gray-400 text-sm mt-1">{theme.subtitle}</p>
             </div>
-            <div className="relative w-14 h-14 flex items-center justify-center">
-              <svg className="w-full h-full transform -rotate-90">
-                <circle
-                  cx="28"
-                  cy="28"
-                  r="24"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                  fill="transparent"
-                  className="text-white/10"
-                />
-                <circle
-                  cx="28"
-                  cy="28"
-                  r="24"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                  fill="transparent"
-                  strokeDasharray={150.8}
-                  strokeDashoffset={150.8 - (150.8 * progress) / 100}
-                  className="text-cyan-400 transition-all duration-1000 ease-out"
-                  style={{ color: theme.accentStart }}
-                />
-              </svg>
-              <div className="absolute text-[10px] font-bold">{Math.round(progress)}%</div>
-            </div>
-          </motion.div>
-        </header>
+            
+            <div className="flex items-center gap-3">
+              {/* Sync Status Icon */}
+              <div className="group relative">
+                {syncStatus === 'synced' ? (
+                  <Cloud className="w-5 h-5 text-green-400/80" />
+                ) : syncStatus === 'error' ? (
+                  <CloudOff className="w-5 h-5 text-red-400/80" />
+                ) : (
+                  <motion.div animate={{ opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1.5 }}>
+                    <Cloud className="w-5 h-5 text-blue-400/80" />
+                  </motion.div>
+                )}
+                
+                {/* Error tooltip */}
+                {syncStatus === 'error' && (
+                  <div className="absolute right-0 top-8 w-48 p-2 bg-red-950/90 border border-red-500/20 rounded-lg text-xs text-red-200 hidden group-hover:block backdrop-blur-md">
+                    {errorMessage || "Sync failed. App is running in offline mode."}
+                  </div>
+                )}
+              </div>
 
-        {/* FILTERS */}
-        <div className="px-6 mb-2 flex-shrink-0">
-          <div className="flex bg-white/5 p-1 rounded-xl">
-            {(['all', 'active', 'done'] as FilterType[]).map((f) => (
+              <button 
+                onClick={() => setShowInfo(true)}
+                className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center hover:bg-white/10 transition-colors border border-white/5"
+              >
+                <Info className="w-5 h-5 text-gray-300" />
+              </button>
+            </div>
+          </div>
+
+          {/* Progress Tracker */}
+          <div className="bg-white/5 rounded-2xl p-5 border border-white/5 shadow-xl">
+            <div className="flex justify-between items-end mb-3">
+              <div>
+                <p className="text-gray-400 text-sm font-medium">Daily Progress</p>
+                <p className="text-2xl font-bold mt-1">{progress}%</p>
+              </div>
+              <p className="text-gray-500 text-sm">{completedCount} of {totalCount} completed</p>
+            </div>
+            <div className="h-2 w-full bg-gray-800 rounded-full overflow-hidden">
+              <motion.div 
+                className={`h-full bg-gradient-to-r ${theme.progressStart} ${theme.progressEnd} rounded-full`}
+                initial={{ width: 0 }}
+                animate={{ width: `${progress}%` }}
+                transition={{ duration: 0.5, ease: "easeOut" }}
+              />
+            </div>
+          </div>
+
+          {/* Filters */}
+          <div className="flex gap-2 mt-6 overflow-x-auto pb-2 scrollbar-hide">
+            {(['All', 'Active', 'Completed'] as FilterType[]).map(f => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
-                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
+                className={`px-5 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all ${
                   filter === f 
-                    ? 'bg-white text-black shadow-lg' 
-                    : 'text-white/40 hover:text-white/60 hover:bg-white/5'
+                    ? 'bg-white text-gray-900 shadow-md' 
+                    : 'bg-white/5 text-gray-400 hover:bg-white/10 border border-white/5'
                 }`}
               >
-                {f.charAt(0).toUpperCase() + f.slice(1)}
+                {f}
               </button>
             ))}
           </div>
-        </div>
+        </header>
 
-        {/* TASK LIST SCROLL AREA */}
-        <div className="flex-1 px-6 overflow-y-auto no-scrollbar pb-32">
+        {/* Task List */}
+        <main className="px-6 pt-4 flex-1">
           <AnimatePresence mode="popLayout">
             {filteredTasks.length === 0 ? (
-              <motion.div 
-                initial={{ opacity: 0 }} 
-                animate={{ opacity: 1 }} 
-                className="flex flex-col items-center justify-center h-full text-center py-12 opacity-30"
+              <motion.div
+                key="empty"
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="text-center py-20"
               >
-                <div className="w-16 h-16 bg-white/10 rounded-full flex items-center justify-center mb-4">
-                  <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                  </svg>
+                <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4 border border-white/5">
+                  <Check className="w-8 h-8 text-gray-500" />
                 </div>
-                <p className="text-sm">No tasks found</p>
+                <h3 className="text-xl font-medium text-gray-300 mb-2">All caught up!</h3>
+                <p className="text-gray-500">
+                  {filter === 'All' 
+                    ? "You have no tasks on your list. Add one below!"
+                    : filter === 'Active'
+                    ? "No active tasks remaining."
+                    : "You haven't completed any tasks yet."}
+                </p>
               </motion.div>
             ) : (
-              filteredTasks.map((task, index) => (
+              filteredTasks.map((task) => (
                 <motion.div
                   key={task.id}
                   layout
-                  initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
-                  transition={{ delay: index * 0.05 }}
-                  className="mb-3 group"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, x: -50 }}
+                  className={`group flex items-center gap-4 p-4 rounded-2xl mb-3 border transition-all duration-300 ${
+                    task.completed 
+                      ? 'bg-white/[0.02] border-white/5' 
+                      : 'bg-white/5 border-white/10 hover:border-white/20 hover:bg-white/10'
+                  }`}
                 >
-                  <div 
-                    className={`p-4 rounded-2xl border transition-all duration-300 flex items-center gap-4 ${
+                  <button
+                    onClick={() => toggleTask(task)}
+                    className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all duration-300 ${
                       task.completed 
-                        ? 'bg-white/[0.02] border-white/5' 
-                        : 'bg-white/[0.05] border-white/10 hover:border-white/20 hover:bg-white/[0.08]'
+                        ? `${theme.addButtonBg} border-transparent scale-110 shadow-[0_0_15px_rgba(99,102,241,0.4)]` 
+                        : `border-2 border-gray-500 hover:border-white/50`
                     }`}
                   >
-                    <button
-                      onClick={() => toggleTask(task)}
-                      className={`w-6 h-6 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-all duration-300 ${
-                        task.completed 
-                          ? 'border-transparent' 
-                          : 'border-white/30 hover:border-cyan-400'
-                      }`}
-                      style={{ 
-                        backgroundColor: task.completed ? theme.accentStart : 'transparent',
-                        borderColor: task.completed ? 'transparent' : undefined
-                      }}
-                    >
-                      {task.completed && (
-                        <motion.svg 
-                          initial={{ scale: 0 }} 
-                          animate={{ scale: 1 }} 
-                          className="w-3.5 h-3.5 text-black font-bold" 
-                          fill="none" 
-                          viewBox="0 0 24 24" 
-                          stroke="currentColor" 
-                          strokeWidth={4}
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </motion.svg>
-                      )}
-                    </button>
-
-                    <div className="flex-1 min-w-0">
-                      <p className={`font-medium truncate transition-all ${
-                        task.completed ? 'text-white/30 line-through' : 'text-white'
-                      } ${theme.taskSize}`}>
-                        {task.text}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1.5">
-                        <span className={`text-[10px] px-2 py-0.5 rounded-md font-medium border ${
-                          theme.categories[task.category] || 'border-white/10 bg-white/5 text-white/50'
-                        }`}>
-                          {task.category}
-                        </span>
-                      </div>
+                    <Check className={`w-4 h-4 text-white transition-all duration-300 ${task.completed ? 'scale-100 opacity-100' : 'scale-50 opacity-0'}`} strokeWidth={3} />
+                  </button>
+                  
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-[15px] transition-all duration-300 truncate ${
+                      task.completed ? 'text-gray-500 line-through' : 'text-gray-200'
+                    }`}>
+                      {task.text}
+                    </p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <div className={`w-1.5 h-1.5 rounded-full ${CATEGORY_DOTS[task.category]}`} />
+                      <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wider">
+                        {task.category}
+                      </span>
                     </div>
-
-                    <button 
-                      onClick={() => deleteTask(task.id)}
-                      className="opacity-0 group-hover:opacity-100 p-2 text-white/20 hover:text-red-400 transition-all focus:opacity-100"
-                    >
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </button>
                   </div>
+
+                  <button
+                    onClick={() => deleteTask(task.id)}
+                    className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-xl transition-all opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </motion.div>
               ))
             )}
           </AnimatePresence>
-        </div>
+        </main>
 
-        {/* BOTTOM COMPOSER - FIXED */}
-        <div className="absolute bottom-0 left-0 right-0 z-20">
-          {/* Gradient Overlay */}
-          <div className="absolute inset-0 bg-gradient-to-t from-[#050816] via-[#050816]/95 to-transparent -top-20 pointer-events-none" />
-          
-          <div className="relative px-6 pb-8 pt-4">
-             {/* Completed Actions */}
-             {completedCount > 0 && (
-              <div className="flex justify-center mb-4">
-                <button 
-                  onClick={clearCompleted}
-                  className="text-xs text-white/30 hover:text-white/60 transition-colors flex items-center gap-1 bg-white/5 px-3 py-1 rounded-full backdrop-blur-md"
+        {/* Add Task Form - Fixed at bottom */}
+        <div className="fixed bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-gray-950 via-gray-950/95 to-transparent z-20 pointer-events-none">
+          <form 
+            onSubmit={addTask}
+            className="max-w-md mx-auto bg-gray-900 border border-white/10 p-2 rounded-2xl shadow-2xl pointer-events-auto flex flex-col gap-3 backdrop-blur-xl"
+          >
+            <div className="flex gap-2 overflow-x-auto px-2 pt-2 scrollbar-hide">
+              {CATEGORIES.map(cat => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setCategory(cat)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all border ${
+                    category === cat 
+                      ? CATEGORY_COLORS[cat]
+                      : 'bg-transparent text-gray-500 border-transparent hover:bg-white/5'
+                  }`}
                 >
-                  <span>Trash {completedCount} completed</span>
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
+                  {cat}
+                </button>
+              ))}
+            </div>
+            
+            <div className="flex items-center gap-2 pl-4 pr-2 pb-2">
+              <input
+                type="text"
+                value={newTask}
+                onChange={(e) => setNewTask(e.target.value)}
+                placeholder="What needs to be done?"
+                className="flex-1 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={!newTask.trim()}
+                className={`w-10 h-10 rounded-xl ${theme.addButtonBg} text-white flex items-center justify-center disabled:opacity-50 disabled:bg-gray-700 transition-colors shadow-lg shadow-indigo-500/20`}
+              >
+                <Plus className="w-5 h-5" />
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {/* Info Modal */}
+      <AnimatePresence>
+        {showInfo && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowInfo(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.95, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 20 }}
+              className="bg-gray-900 border border-white/10 rounded-3xl p-6 max-w-sm w-full shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-xl font-bold text-white">App Info</h2>
+                <button 
+                  onClick={() => setShowInfo(false)}
+                  className="p-2 hover:bg-white/5 rounded-full text-gray-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
                 </button>
               </div>
-            )}
 
-            <form onSubmit={addTask} className="bg-white/10 backdrop-blur-xl border border-white/10 rounded-3xl p-2 shadow-2xl shadow-black/50">
-              <div className="flex items-center gap-2 mb-2 px-2 pt-2">
-                <span className="text-[10px] uppercase font-bold text-white/30 tracking-wider">New Task</span>
-                <div className="flex-1 h-px bg-white/5" />
-                <div className="flex gap-1">
-                  {(['Focus', 'Life', 'Errands'] as const).map((cat) => (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() => setCategory(cat)}
-                      className={`px-3 py-1 rounded-full text-[10px] font-bold transition-all border ${
-                        category === cat 
-                          ? theme.categories[cat]
-                          : 'border-transparent bg-white/5 text-white/30 hover:bg-white/10 hover:text-white/50'
-                      }`}
-                    >
-                      {cat}
-                    </button>
-                  ))}
+              <div className="space-y-6">
+                <div className="bg-white/5 border border-white/5 rounded-2xl p-4">
+                  <div className="flex items-center gap-3 mb-2">
+                    <Cloud className={`w-5 h-5 ${syncStatus === 'synced' ? 'text-green-400' : syncStatus === 'error' ? 'text-red-400' : 'text-blue-400'}`} />
+                    <h3 className="font-semibold text-white">Cloud Sync</h3>
+                  </div>
+                  <p className="text-sm text-gray-400 mb-2">
+                    {syncStatus === 'synced' 
+                      ? 'Your tasks are actively syncing across devices via Firebase.'
+                      : syncStatus === 'error'
+                      ? 'Sync offline. Tasks are saving to this device only. Check Firebase Rules.'
+                      : 'Connecting to database...'}
+                  </p>
+                  {errorMessage && (
+                    <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 mt-2 flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                      <p className="text-xs text-red-300">{errorMessage}</p>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <h3 className="font-semibold text-white mb-2 flex items-center gap-2">
+                    <span className="text-lg">📱</span> Add to Home Screen
+                  </h3>
+                  <div className="space-y-3 text-sm text-gray-400">
+                    <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                      <strong className="text-white block mb-1">iPhone (Safari)</strong>
+                      Tap the Share button <span className="inline-block bg-white/10 px-1.5 rounded text-xs mx-1">↑</span> then select "Add to Home Screen"
+                    </div>
+                    <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                      <strong className="text-white block mb-1">Android (Chrome)</strong>
+                      Tap the Menu button <span className="inline-block bg-white/10 px-1.5 rounded text-xs mx-1">⋮</span> then select "Add to Home screen"
+                    </div>
+                  </div>
                 </div>
               </div>
-              
-              <div className="relative">
-                <input
-                  type="text"
-                  value={newTask}
-                  onChange={(e) => setNewTask(e.target.value)}
-                  placeholder="What needs doing?"
-                  className="w-full bg-transparent border-none px-4 py-3 text-white placeholder-white/30 focus:outline-none text-lg"
-                />
-                <button
-                  type="submit"
-                  disabled={!newTask.trim()}
-                  className="absolute right-1 top-1 bottom-1 aspect-square rounded-2xl flex items-center justify-center text-black font-bold transition-all transform hover:scale-105 active:scale-95 disabled:opacity-0 disabled:scale-75 shadow-lg"
-                  style={{ background: `linear-gradient(135deg, ${theme.accentStart}, ${theme.accentEnd})` }}
-                >
-                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
-              </div>
-            </form>
-            
-            <div className="mt-4 flex justify-center items-center gap-2 opacity-30">
-              <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-              <span className="text-[10px] font-medium tracking-wide">SYNCED TO CLOUD</span>
-            </div>
-          </div>
-        </div>
-
-      </div>
-    </motion.div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      
+    </div>
   );
 }
 
