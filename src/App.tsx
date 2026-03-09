@@ -1,6 +1,20 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 import theme from "./theme";
+import { db } from "./firebase";
+import { 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  onSnapshot,
+  query,
+  orderBy
+} from "firebase/firestore";
+
+// Remove unused loadTasks function - we now load from Firebase
+// const loadTasks function removed
 
 type Category = "Focus" | "Life" | "Errands";
 type Filter = "all" | "active" | "done";
@@ -13,8 +27,6 @@ type Task = {
   createdAt: number;
 };
 
-const STORAGE_KEY = "minute-mobile-todos";
-
 const filterOptions: Array<{ key: Filter; label: string }> = [
   { key: "all", label: "All" },
   { key: "active", label: "Active" },
@@ -22,65 +34,6 @@ const filterOptions: Array<{ key: Filter; label: string }> = [
 ];
 
 const categoryOptions: Category[] = ["Focus", "Life", "Errands"];
-
-function createTaskId() {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function createStarterTasks(): Task[] {
-  const now = Date.now();
-  return [
-    {
-      id: "starter-1",
-      title: "Review launch checklist",
-      category: "Focus",
-      completed: false,
-      createdAt: now - 1000 * 60 * 42,
-    },
-    {
-      id: "starter-2",
-      title: "Pick up groceries for dinner",
-      category: "Errands",
-      completed: false,
-      createdAt: now - 1000 * 60 * 88,
-    },
-    {
-      id: "starter-3",
-      title: "Stretch for ten minutes",
-      category: "Life",
-      completed: true,
-      createdAt: now - 1000 * 60 * 180,
-    },
-  ];
-}
-
-function loadTasks() {
-  if (typeof window === "undefined") return createStarterTasks();
-
-  const saved = window.localStorage.getItem(STORAGE_KEY);
-  if (!saved) return createStarterTasks();
-
-  try {
-    const parsed = JSON.parse(saved);
-    if (!Array.isArray(parsed)) return createStarterTasks();
-
-    const valid = parsed.filter(
-      (t): t is Task =>
-        typeof t?.id === "string" &&
-        typeof t?.title === "string" &&
-        categoryOptions.includes(t?.category) &&
-        typeof t?.completed === "boolean" &&
-        typeof t?.createdAt === "number"
-    );
-
-    return valid.length > 0 ? valid : createStarterTasks();
-  } catch {
-    return createStarterTasks();
-  }
-}
 
 function formatRelativeTime(ts: number) {
   const mins = Math.round((Date.now() - ts) / 60000);
@@ -99,14 +52,27 @@ function getGreeting() {
 }
 
 export function App() {
-  const [tasks, setTasks] = useState<Task[]>(loadTasks);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [draft, setDraft] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<Category>("Focus");
   const [activeFilter, setActiveFilter] = useState<Filter>("active");
 
+  // Load tasks from Firebase with real-time sync
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
-  }, [tasks]);
+    const q = query(collection(db, "tasks"), orderBy("createdAt", "desc"));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedTasks = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      } as Task));
+      setTasks(loadedTasks);
+    }, (error) => {
+      console.error("Error loading tasks:", error);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const sortedTasks = useMemo(
     () =>
@@ -135,36 +101,54 @@ export function App() {
 
   const greeting = getGreeting();
 
-  function handleAddTask(e: React.FormEvent<HTMLFormElement>) {
+  async function handleAddTask(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const title = draft.trim().replace(/\s+/g, " ");
     if (!title) return;
 
-    setTasks((prev) => [
-      {
-        id: createTaskId(),
+    try {
+      await addDoc(collection(db, "tasks"), {
         title,
         category: selectedCategory,
         completed: false,
         createdAt: Date.now(),
-      },
-      ...prev,
-    ]);
+      });
+    } catch (error) {
+      console.error("Error adding task:", error);
+    }
     setDraft("");
   }
 
-  function toggleTask(id: string) {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t))
-    );
+  async function toggleTask(id: string) {
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    
+    try {
+      await updateDoc(doc(db, "tasks", id), {
+        completed: !task.completed,
+      });
+    } catch (error) {
+      console.error("Error updating task:", error);
+    }
   }
 
-  function deleteTask(id: string) {
-    setTasks((prev) => prev.filter((t) => t.id !== id));
+  async function deleteTask(id: string) {
+    try {
+      await deleteDoc(doc(db, "tasks", id));
+    } catch (error) {
+      console.error("Error deleting task:", error);
+    }
   }
 
-  function clearCompleted() {
-    setTasks((prev) => prev.filter((t) => !t.completed));
+  async function clearCompleted() {
+    const completedTasks = tasks.filter(t => t.completed);
+    try {
+      await Promise.all(
+        completedTasks.map(task => deleteDoc(doc(db, "tasks", task.id)))
+      );
+    } catch (error) {
+      console.error("Error clearing completed:", error);
+    }
   }
 
   return (
@@ -471,7 +455,7 @@ export function App() {
                 </button>
               ) : (
                 <span className="text-xs uppercase tracking-[0.22em] text-white/28">
-                  Saved on device
+                  Synced to cloud
                 </span>
               )}
             </div>
