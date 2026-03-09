@@ -4,43 +4,40 @@
 // ============================================================
 
 const theme = {
-  // --- Background colours ---
-  pageBg: "#050816",          // outer page background
-  cardBg: "rgba(255,255,255,0.03)", // main app card background
+  // --- Text & Layout ---
+  appName: "TaskFlow",
+  subtitle: "Organize your day",
 
-  // --- Text sizes (Tailwind scale: text-xs text-sm text-base text-lg text-xl text-2xl text-3xl text-4xl) ---
-  titleSize: "text-4xl",      // "Today" heading
-  subtitleSize: "text-sm",    // greeting / remaining count line
-  dateSize: "text-xs",        // date below greeting
-  taskSize: "text-base",      // task title text
-  labelSize: "text-xs",       // category badge & timestamp
+  // --- Background Colors ---
+  pageBg: "bg-gray-950",        // main background color
+  headerBg: "bg-gray-950/80",   // header background with blur
 
-  // --- Accent colours (used in progress ring and highlights) ---
-  accentStart: "#22d3ee",     // gradient start (cyan by default)
-  accentEnd: "#c026d3",       // gradient end (fuchsia by default)
+  // --- Gradient Header Text ---
+  gradientTextStart: "from-indigo-400",
+  gradientTextEnd: "to-purple-400",
 
-  // --- Category badge colours (Tailwind classes) ---
+  // --- Progress Bar Gradient ---
+  progressStart: "from-indigo-500",
+  progressEnd: "to-purple-500",
+
+  // --- Add Button Color ---
+  addButtonBg: "bg-indigo-500",
+
+  // --- Categories Setup ---
   categories: {
-    Focus:   "border-cyan-400/20 bg-cyan-400/10 text-cyan-100",
-    Life:    "border-fuchsia-400/20 bg-fuchsia-400/10 text-fuchsia-100",
-    Errands: "border-amber-400/20 bg-amber-400/10 text-amber-100",
+    Personal: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+    Work: "bg-purple-500/20 text-purple-400 border-purple-500/30",
+    Shopping: "bg-pink-500/20 text-pink-400 border-pink-500/30",
+    Health: "bg-green-500/20 text-green-400 border-green-500/30"
   },
 
-  // --- Checkmark button colours ---
-  checkDoneBg: "bg-cyan-400",          // filled circle when task is done
-  checkDoneBorder: "border-cyan-300/40",
-  checkDoneText: "#050816",            // tick colour when done
-
-  // --- Add button ---
-  addButtonBg: "bg-white",
-  addButtonText: "text-[#050816]",
-  addButtonHover: "hover:bg-cyan-100",
-
-  // --- Bottom bar background ---
-  bottomBarBg: "bg-[#050816]/95",
-
-  // --- App name shown at the top ---
-  appName: "Minute",
+  // --- Category Dots ---
+  dots: {
+    Personal: "bg-blue-400",
+    Work: "bg-purple-400",
+    Shopping: "bg-pink-400",
+    Health: "bg-green-400"
+  }
 };
 
 export default theme;

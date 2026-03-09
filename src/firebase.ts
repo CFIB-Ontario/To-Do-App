@@ -1,16 +1,14 @@
-// Firebase configuration
-// You will replace these values with your own Firebase project config
-
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 
+// Your web app's Firebase configuration
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyDkgg2f7D73plxI9HBD3hJNUoKL21NmTa8",
+  authDomain: "todlist-87237.firebaseapp.com",
+  projectId: "todlist-87237",
+  storageBucket: "todlist-87237.firebasestorage.app",
+  messagingSenderId: "38996271758",
+  appId: "1:38996271758:web:78eb38aef5c0e86426dfdf"
 };
 
 // Initialize Firebase
